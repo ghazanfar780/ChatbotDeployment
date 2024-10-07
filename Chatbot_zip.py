@@ -13,7 +13,7 @@ from langchain.prompts import ChatPromptTemplate
 import fitz  # PyMuPDF
 import pandas as pd
 
-# API key is now hardcoded
+# API key
 api_key = "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"
 
 # Function to load text from various file types
@@ -22,12 +22,10 @@ def load_text(file_stream, file_name):
         return load_pdf(file_stream)
     elif file_name.endswith('.csv'):
         return load_csv(file_stream)
-    # Add more file types as needed
     return []
 
 # Function to load PDF and extract text
 def load_pdf(file_stream):
-    # Convert ZipExtFile to bytes
     file_bytes = io.BytesIO(file_stream.read())
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -164,37 +162,33 @@ def display_message(message, is_user=False):
 # Streamlit app main function
 def main():
     st.markdown(css, unsafe_allow_html=True)
-    st.title("CHAT WITH PDFS")
 
-    # Initialize session state variables
-    if 'generated' not in st.session_state:
-        st.session_state['generated'] = []
+    # Check if it's admin or user view
+    if st.experimental_get_query_params().get('view') == ['admin']:
+        st.title("Admin View: Upload PDFs and CSVs")
+        uploaded_zip = st.file_uploader("Upload a ZIP file", type=["zip"])
+        process_button = st.button("Process Files")
 
-    if 'past' not in st.session_state:
-        st.session_state['past'] = []
-
-    uploaded_zip = st.sidebar.file_uploader("Upload a ZIP file", type=["zip"])
-    process_button = st.sidebar.button("Process Files")
-
-    docs = []  # Initialize docs list here to ensure it's available
-
-    if process_button:
-        if uploaded_zip:
+        if process_button and uploaded_zip:
             with st.spinner("Loading and processing ZIP file..."):
                 docs = process_zip(uploaded_zip)
+            if docs:
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+                splits = text_splitter.split_documents(docs)
+                model_name = "all-MiniLM-L6-v2"
+                embeddings = HuggingFaceEmbeddings(model_name=model_name)
+                vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
+                retriever = vectorstore.as_retriever()
+                st.session_state.retriever = retriever
+                st.success("Files loaded and processed successfully!")
 
-        if docs:
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            splits = text_splitter.split_documents(docs)
-            model_name = "all-MiniLM-L6-v2"
-            embeddings = HuggingFaceEmbeddings(model_name=model_name)
-            vectorstore = FAISS.from_documents(documents=splits, embedding=embeddings)
-            retriever = vectorstore.as_retriever()
-            st.session_state.retriever = retriever
-            st.success("Files loaded and processed successfully!")
+    else:
+        st.title("User View: Search Documents")
+        if 'retriever' not in st.session_state:
+            st.error("No documents available. Please contact the admin to upload and process documents.")
+            return
 
-    # Setup the question-answering chain if ZIP is processed
-    if 'retriever' in st.session_state:
+        # Setup the question-answering chain
         system_prompt = (
             "You are an assistant for question-answering tasks based on the provided/uploaded documents. "
             "When a query is received, first search the content of the documents to find a relevant answer. If the answer is available, "
@@ -216,7 +210,7 @@ def main():
         rag_chain = create_retrieval_chain(st.session_state.retriever, question_answer_chain)
 
         # Display the conversation chain
-        if st.session_state['generated']:
+        if st.session_state.get('generated', []):
             for ai_msg, user_msg in zip(st.session_state['generated'], st.session_state['past']):
                 if user_msg:
                     display_message(user_msg, is_user=True)
@@ -224,28 +218,20 @@ def main():
                     display_message(ai_msg)
 
         # User input setup
-        input_container = st.empty()  # This container will hold the input box
-        user_input = input_container.text_input("Ask a question about the content:", key="user_input")
+        user_input = st.text_input("Ask a question about the content:", key="user_input")
 
-        # Buttons on the same line
-        col1, col2 = st.columns(2)
-        ask_button = col1.button("Ask")
-        clear_button = col2.button("Clear 🗑️")
-
-        if ask_button and user_input:
+        if st.button("Ask") and user_input:
             with st.spinner("Getting the answer..."):
                 results = rag_chain.invoke({"input": user_input})
                 answer = results['answer']
-                st.session_state.past.append(user_input)
-                st.session_state.generated.append(answer)
+                st.session_state.past = st.session_state.get('past', []) + [user_input]
+                st.session_state.generated = st.session_state.get('generated', []) + [answer]
                 display_message(user_input, is_user=True)
                 display_message(answer)
 
-        if clear_button:
-            input_container.text_input("Ask a question about the content:", value="", key="reset")
+        if st.button("Clear"):
             st.session_state.past = []
             st.session_state.generated = []
 
 if __name__ == "__main__":
     main()
-
